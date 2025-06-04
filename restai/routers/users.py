@@ -259,7 +259,7 @@ async def route_update_user(
             raise HTTPException(status_code=404, detail="User not found")
 
         if not user.is_admin and user_update.is_admin is True:
-            raise HTTPException(status_code=403, detail="Insuficient permissions")
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
 
         db_wrapper.update_user(user_to_update, user_update)
 
