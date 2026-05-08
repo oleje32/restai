@@ -413,7 +413,7 @@ async def route_update_user(
             raise HTTPException(status_code=404, detail="User not found")
 
         if not user.is_admin and user_update.is_admin is True:
-            raise HTTPException(status_code=403, detail="Insuficient permissions")
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
 
         if user_update.is_private is not None and user_update.is_private != user_to_update.is_private:
             can_change = user.is_admin
