@@ -141,6 +141,18 @@ async def ldap_auth(request: Request, form_data: UserLogin, db_wrapper: DBWrappe
                     except (ValueError, TypeError):
                         pass
 
+            # TOTP step-up guard: if the user has 2FA enabled, do NOT mint a
+            # full session token.  Redirect to the SPA TOTP page with a
+            # short-lived temp token so the front-end can complete the second
+            # step (same flow as OAuth — see restai/oauth.py for details).
+            # The full session cookie is intentionally NOT set here.
+            if user.totp_enabled:
+                totp_token = create_access_token(
+                    data={"username": user.username, "purpose": "totp_verify"},
+                    expires_delta=timedelta(minutes=5),
+                )
+                return RedirectResponse(f"./admin/totp-verify?totp_token={totp_token}")
+
             new_token = create_access_token(
                 data={"username": user.username}, expires_delta=timedelta(minutes=1440)
             )

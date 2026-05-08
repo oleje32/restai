@@ -139,6 +139,28 @@ class OAuthManager:
                 status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED
             )
 
+        # TOTP step-up guard: if the user has 2FA enabled, do NOT mint a full
+        # session token.  The OAuth callback is a browser redirect, not an XHR,
+        # so we cannot return a JSON body here in a way the SPA will intercept
+        # before the page changes.  Instead we redirect to the TOTP page with a
+        # short-lived temp token in the query string so the SPA can complete the
+        # second step.  The full session cookie is intentionally NOT set here.
+        if user.totp_enabled:
+            totp_token = create_access_token(
+                data={"username": user.username, "purpose": "totp_verify"},
+                expires_delta=timedelta(minutes=5),
+            )
+            base_url = config.RESTAI_URL or ""
+            if base_url and not base_url.startswith("http"):
+                base_url = "https://" + base_url
+            # Redirect to the SPA TOTP page; the front-end reads `totp_token`
+            # from the query string and POSTs to /auth/verify-totp to complete
+            # the login flow (same path as password login with requires_totp).
+            return RedirectResponse(
+                f"{base_url}/admin/totp-verify?totp_token={totp_token}",
+                headers=response.headers,
+            )
+
         jwt_token = create_access_token(
             data={"username": user.username}, expires_delta=timedelta(minutes=1440)
         )
