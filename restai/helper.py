@@ -37,6 +37,12 @@ _URL_PATTERN = re.compile(
     r"https?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(),]|%[0-9a-fA-F][0-9a-fA-F])+"
 )
 
+# Ranges Python's ipaddress flags miss (not private/reserved/global): CGNAT
+# (RFC 6598) is reachable on many provider networks and is a real SSRF target.
+_EXTRA_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),
+)
+
 
 def _is_private_ip(hostname: str) -> bool:
     try:
@@ -58,6 +64,8 @@ def _is_private_ip(hostname: str) -> bool:
             or ip.is_unspecified
             or ip.is_multicast
         ):
+            return True
+        if any(ip in net for net in _EXTRA_BLOCKED_NETWORKS):
             return True
     return False
 
