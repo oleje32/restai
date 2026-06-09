@@ -61,7 +61,12 @@ def create_mcp_server(app_ref) -> FastMCP:
         try:
             query = db_wrapper.db.query(ProjectDatabase)
             if not user.is_admin:
-                query = query.filter(ProjectDatabase.id.in_(user.get_project_ids()))
+                allowed_ids = user.get_project_ids()
+                # Respect API-key project scoping: a project-scoped key must not
+                # enumerate projects outside its allowlist (mirrors the REST path).
+                if user.api_key_allowed_projects is not None:
+                    allowed_ids = {pid for pid in allowed_ids if pid in user.api_key_allowed_projects}
+                query = query.filter(ProjectDatabase.id.in_(allowed_ids))
             projects = query.all()
             result = []
             for p in projects:
@@ -99,6 +104,11 @@ def create_mcp_server(app_ref) -> FastMCP:
                 return f"Error: Project '{project_name}' not found."
 
             if not user.has_project_access(project_db.id):
+                return f"Error: Access denied to project '{project_name}'."
+
+            # Respect API-key project scoping: a project-scoped key must not
+            # reach projects outside its allowlist (mirrors the REST path).
+            if not user.has_api_key_project_access(project_db.id):
                 return f"Error: Access denied to project '{project_name}'."
 
             brain: Brain = app_ref.state.brain

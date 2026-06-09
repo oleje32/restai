@@ -27,6 +27,53 @@ router = APIRouter()
 _LOGIN_MAX_ATTEMPTS = 10
 _LOGIN_WINDOW_SECONDS = 300
 
+# Per-account 2FA brute-force lockout. Reuses the `login_attempts` table by
+# namespacing the `ip` column with `totp:<username>` so no migration is needed.
+_TOTP_MAX_ATTEMPTS = 10
+_TOTP_WINDOW_SECONDS = 900
+
+
+def _totp_account_key(username: str) -> str:
+    return f"totp:{username}"
+
+
+def _check_totp_account_lockout(username: str, db_wrapper: DBWrapper):
+    """Raise 429 if too many failed 2FA attempts for this account in the window."""
+    from restai.models.databasemodels import LoginAttemptDatabase
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_TOTP_WINDOW_SECONDS)
+    count = (
+        db_wrapper.db.query(LoginAttemptDatabase)
+        .filter(
+            LoginAttemptDatabase.ip == _totp_account_key(username),
+            LoginAttemptDatabase.attempted_at > cutoff,
+        )
+        .count()
+    )
+    if count >= _TOTP_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many 2FA attempts, try again later")
+
+
+def _record_totp_failure(username: str, db_wrapper: DBWrapper):
+    from restai.models.databasemodels import LoginAttemptDatabase
+
+    db_wrapper.db.add(
+        LoginAttemptDatabase(
+            ip=_totp_account_key(username),
+            attempted_at=datetime.now(timezone.utc),
+        )
+    )
+    db_wrapper.db.commit()
+
+
+def _clear_totp_failures(username: str, db_wrapper: DBWrapper):
+    from restai.models.databasemodels import LoginAttemptDatabase
+
+    db_wrapper.db.query(LoginAttemptDatabase).filter(
+        LoginAttemptDatabase.ip == _totp_account_key(username)
+    ).delete()
+    db_wrapper.db.commit()
+
 
 def _check_login_rate_limit(request: Request, db_wrapper: DBWrapper):
     from restai.models.databasemodels import LoginAttemptDatabase
@@ -155,6 +202,10 @@ async def verify_totp(
         raise HTTPException(status_code=401, detail="Invalid or expired TOTP token")
 
     username = data.get("username")
+    # Per-account brute-force lockout (defense in depth alongside the IP limit):
+    # an attacker rotating IPs would otherwise get unbounded guesses against the
+    # 6-digit TOTP / recovery codes. Checked BEFORE verifying the code.
+    _check_totp_account_lockout(username, db_wrapper)
     user_db = db_wrapper.get_user_by_username(username)
     if user_db is None or not user_db.totp_enabled or not user_db.totp_secret:
         raise HTTPException(status_code=401, detail="Invalid TOTP configuration")
@@ -163,6 +214,7 @@ async def verify_totp(
         secret = decrypt_totp_secret(user_db.totp_secret)
         totp = pyotp.TOTP(secret)
         if totp.verify(body.code, valid_window=1):
+            _clear_totp_failures(username, db_wrapper)
             jwt_token = create_access_token(
                 data={"username": username}, expires_delta=timedelta(minutes=1440)
             )
@@ -190,6 +242,7 @@ async def verify_totp(
                 codes.remove(matched_code)
                 user_db.totp_recovery_codes = json.dumps(codes)
                 db_wrapper.db.commit()
+                _clear_totp_failures(username, db_wrapper)
 
                 jwt_token = create_access_token(
                     data={"username": username}, expires_delta=timedelta(minutes=1440)
@@ -206,6 +259,8 @@ async def verify_totp(
         except Exception:
             pass
 
+    # All verification paths failed — record the per-account failed attempt.
+    _record_totp_failure(username, db_wrapper)
     raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
 

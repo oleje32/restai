@@ -2,7 +2,7 @@ import time
 import socket
 import ipaddress
 from typing import AsyncGenerator, Any, Dict
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 from starlette.responses import StreamingResponse
 from requests import Response
@@ -33,16 +33,6 @@ logger = logging.getLogger(__name__)
 
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 
-_BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-]
-
 _URL_PATTERN = re.compile(
     r"https?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(),]|%[0-9a-fA-F][0-9a-fA-F])+"
 )
@@ -56,10 +46,51 @@ def _is_private_ip(hostname: str) -> bool:
 
     for addrinfo in addrinfos:
         ip = ipaddress.ip_address(addrinfo[4][0])
-        for network in _BLOCKED_NETWORKS:
-            if ip in network:
-                return True
+        # Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to the v4 address
+        # so the v4 classification flags below apply.
+        if getattr(ip, "ipv4_mapped", None) is not None:
+            ip = ip.ipv4_mapped
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_unspecified
+            or ip.is_multicast
+        ):
+            return True
     return False
+
+
+def safe_get(url: str, **kwargs) -> Response:
+    """Perform an SSRF-safe GET, re-validating every redirect hop.
+
+    Validates the initial hostname via ``_is_private_ip`` (raises ValueError
+    on private/unresolvable), then manually follows up to 5 redirects with
+    ``allow_redirects=False``, re-validating the hostname of each ``Location``
+    before fetching it. Relative Locations are resolved against the prior URL.
+    """
+    kwargs.pop("allow_redirects", None)
+    current = url
+    for _ in range(6):  # initial request + up to 5 redirects
+        parsed = urlparse(current)
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("URL has no valid hostname.")
+        if _is_private_ip(hostname):
+            logger.warning("Blocked SSRF attempt to internal address: %s", hostname)
+            raise ValueError(f"Access to internal/private addresses is not allowed: {hostname}")
+
+        response = requests.get(current, allow_redirects=False, **kwargs)
+        if response.is_redirect or response.is_permanent_redirect:
+            location = response.headers.get("Location")
+            if not location:
+                return response
+            response.close()
+            current = urljoin(current, location)
+            continue
+        return response
+    raise ValueError("Too many redirects.")
 
 
 def resolve_image(image: str) -> str:
@@ -73,7 +104,7 @@ def resolve_image(image: str) -> str:
             logger.warning("Blocked SSRF attempt to internal address: %s", hostname)
             raise ValueError(f"Access to internal/private addresses is not allowed: {hostname}")
 
-        response = requests.get(image, timeout=10, stream=True)
+        response = safe_get(image, timeout=10, stream=True)
         response.raise_for_status()
 
         chunks = []
