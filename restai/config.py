@@ -72,8 +72,30 @@ load_env_vars()
 
 env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
 
-def _ensure_env_secret(var_name, generator=None):
+def _ensure_env_secret(var_name, generator=None, critical=False):
     if not os.environ.get(var_name):
+        # In production, refuse to silently auto-generate secrets whose
+        # divergence is catastrophic. A per-replica/per-restart
+        # RESTAI_AUTH_SECRET invalidates every session inconsistently, and a
+        # per-replica RESTAI_FERNET_KEY makes secrets encrypted by one worker
+        # undecryptable by another — and lost entirely on an ephemeral
+        # filesystem. Fail loudly so the operator injects one shared,
+        # persistent value. Existing installs already carry the key in .env
+        # (loaded above via load_dotenv) so they are unaffected.
+        _is_dev = (os.environ.get("RESTAI_DEV") or "").lower() in ("true", "1")
+        if critical and not _is_dev:
+            _gen_hint = (
+                "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+                if generator else
+                "python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+            )
+            raise RuntimeError(
+                f"{var_name} is not set. RESTAI refuses to auto-generate it outside "
+                f"development: a generated value diverges across replicas and vanishes "
+                f"on restart, invalidating sessions and making encrypted secrets "
+                f"unrecoverable. Set {var_name} explicitly in the environment "
+                f"(generate one with: {_gen_hint}), or set RESTAI_DEV=true for local use."
+            )
         secret = generator() if generator else secrets.token_urlsafe(64)
         os.environ[var_name] = secret
         try:
@@ -83,14 +105,14 @@ def _ensure_env_secret(var_name, generator=None):
         except Exception as e:
             print(f"Warning: Could not write {var_name} to .env: {e}")
 
-_ensure_env_secret("RESTAI_AUTH_SECRET")
+_ensure_env_secret("RESTAI_AUTH_SECRET", critical=True)
 _ensure_env_secret("SSO_SECRET_KEY")
 
 def _generate_fernet_key():
     from cryptography.fernet import Fernet
     return Fernet.generate_key().decode()
 
-_ensure_env_secret("RESTAI_FERNET_KEY", generator=_generate_fernet_key)
+_ensure_env_secret("RESTAI_FERNET_KEY", generator=_generate_fernet_key, critical=True)
 
 # ---- Boot-only env vars (cannot live in the DB; needed before DB is up) ----
 

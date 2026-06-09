@@ -187,12 +187,23 @@ def _ensure_playwright_pkg(container, image: str) -> None:
     if probe.exit_code == 0:
         return
     pin = _parse_playwright_version(image)
-    pkg = f"playwright=={pin}" if pin else "playwright"
+    if not pin:
+        # Fail closed rather than `pip install playwright` (unpinned latest):
+        # an unpinned runtime install is a supply-chain foothold and may also
+        # mismatch the browser binaries baked into the image. Require a
+        # version-tagged image, or bake the `playwright` pkg into a custom image
+        # (recommended — then set BROWSER_READ_ONLY=true to drop runtime pip).
+        raise RuntimeError(
+            f"Cannot pin playwright version from image tag '{image}'. Use a "
+            f"version-tagged Playwright image (e.g. ...:v1.48.0-jammy) or bake "
+            f"the playwright package into a custom image."
+        )
+    pkg = f"playwright=={pin}"
     logger.info("Browser: installing %s inside container", pkg)
-    cmd = ["sh", "-c", f"pip install --quiet --break-system-packages {pkg}"]
+    cmd = ["sh", "-c", f"pip install --quiet --no-input --break-system-packages {pkg}"]
     result = container.exec_run(cmd)
     if result.exit_code != 0:
-        cmd = ["sh", "-c", f"pip install --quiet {pkg}"]
+        cmd = ["sh", "-c", f"pip install --quiet --no-input {pkg}"]
         result = container.exec_run(cmd)
     if result.exit_code != 0:
         out = (result.output or b"").decode("utf-8", errors="replace")
@@ -242,6 +253,15 @@ def _create_container(scoped_id: str):
         raise RuntimeError("Browser runtime is not configured")
     image = (getattr(_cfg, "BROWSER_IMAGE", _DEFAULT_IMAGE) or _DEFAULT_IMAGE)
     network = (getattr(_cfg, "BROWSER_NETWORK", "bridge") or "bridge")
+    # Opt-in read-only rootfs. Off by default because it is incompatible with
+    # the runtime `pip install playwright` step (pip writes to site-packages):
+    # enable it only with a custom image that bakes the playwright package in.
+    # When on, the writable paths Chromium/Playwright need are backed by tmpfs.
+    read_only = bool(getattr(_cfg, "BROWSER_READ_ONLY", False))
+    run_kwargs = {}
+    if read_only:
+        run_kwargs["read_only"] = True
+        run_kwargs["tmpfs"] = {"/tmp": "", "/home": "", "/root": "", "/dev/shm": "size=512m"}
     logger.info("Browser: creating container for chat_id=%s", scoped_id)
     from restai.observability.instance import get_instance_id
     container = c.containers.run(
@@ -257,11 +277,16 @@ def _create_container(scoped_id: str):
         mem_limit="1g",
         cpu_period=100000,
         cpu_quota=100000,
+        # Cap process count to blunt fork-bombs from a hostile/exploited page;
+        # block setuid privilege escalation inside the container.
+        pids_limit=512,
+        security_opt=["no-new-privileges"],
         network_mode=network,
         # Chromium needs >64M /dev/shm or tabs crash unpredictably.
         shm_size="512m",
         ports={f"{_CONTAINER_PORT}/tcp": ("127.0.0.1", None)},
         remove=True,
+        **run_kwargs,
     )
     container.reload()
     port = _discover_port(container)
