@@ -50,14 +50,14 @@ def terminal(command: str, **kwargs) -> str:
         finally:
             db.close()
 
-    output = brain.docker_manager.exec_command(chat_id or "ephemeral", command, env=env or None)
+    output = brain.docker_manager.exec_command(chat_id or "ephemeral", command, env=env or None, project_id=project_id)
 
     # /artifacts/ convention: new files staged for the next turn become
     # multimodal blocks (image / document / mention) via the agent loop.
     # Appended as a short text notice so the model knows about the
     # attachment without seeing the bytes.
     try:
-        new_artifacts = brain.docker_manager.collect_new_artifacts(chat_id or "ephemeral")
+        new_artifacts = brain.docker_manager.collect_new_artifacts(chat_id or "ephemeral", project_id=project_id)
     except Exception:
         new_artifacts = []
     if new_artifacts:

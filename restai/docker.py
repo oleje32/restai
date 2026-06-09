@@ -44,6 +44,21 @@ PUT_FILES_CHUNK = 64 * 1024  # tar chunk for upload, < MAX_ARG_STRLEN
 _client: Optional[_docker_sdk.DockerClient] = None
 _client_url: str = ""
 
+# Sentinel project id for callers with no real project (tool smoke-tests,
+# truly anonymous execs). Two DIFFERENT real projects never collide because
+# their ids differ; only genuinely project-less callers share this bucket.
+EPHEMERAL_PROJECT_ID = 0
+
+
+def _scoped_id(project_id, chat_id: str) -> str:
+    """Container identity key: namespaces the client-supplied chat_id by
+    project so a chat_id from project A can never resolve to (or seed
+    secrets into) project B's container. Used verbatim as the
+    `restai.chat_id` label value AND the `docker_chat_activity` key, so
+    create/resolve/cleanup all agree."""
+    pid = EPHEMERAL_PROJECT_ID if project_id is None else int(project_id)
+    return f"{pid}:{chat_id or 'ephemeral'}"
+
 
 def _get_client() -> Optional[_docker_sdk.DockerClient]:
     """Cached per-process DockerClient; rebuilt on `docker_url` change."""
@@ -77,45 +92,51 @@ def client_info() -> dict:
     return c.info()
 
 
-def _resolve_container(chat_id: str):
-    """Looked up by `restai.chat_id=<id>` label every call — daemon is source of truth."""
+def _resolve_container(scoped_id: str):
+    """Looked up by `restai.chat_id=<project_id:chat_id>` label every call —
+    daemon is source of truth. `scoped_id` is project-namespaced (see
+    `_scoped_id`) so a lookup for (projectA, chatX) never returns
+    projectB's container."""
     c = _get_client()
-    if c is None or not chat_id:
+    if c is None or not scoped_id:
         return None
     try:
         matches = c.containers.list(
-            filters={"label": [f"restai.chat_id={chat_id}", "restai.managed=true"]},
+            filters={"label": [f"restai.chat_id={scoped_id}", "restai.managed=true"]},
             limit=1,
         )
     except Exception as e:
-        logger.warning("Docker container list failed for chat_id=%s: %s", chat_id, e)
+        logger.warning("Docker container list failed for chat_id=%s: %s", scoped_id, e)
         return None
     if matches and matches[0].status == "running":
         return matches[0]
     return None
 
 
-def chat_workspace_dir(chat_id: str) -> str:
+def chat_workspace_dir(project_id, chat_id: str) -> str:
     """Isolated host-side working directory for the `agent_loop=claude` SDK
     orchestrator process (passed as its `cwd`). It is NO LONGER bind-mounted
     into the container and the SDK runs no host-side file tools (tools=[]), so
     this dir stays empty — it exists only because the orchestrator process
     needs some cwd off the RESTai source tree. All actual file/shell work
-    happens inside the Docker sandbox via the `terminal` builtin."""
+    happens inside the Docker sandbox via the `terminal` builtin.
+
+    Project-namespaced so two projects sharing a client-supplied chat_id get
+    distinct host dirs."""
     import os
-    safe_id = (chat_id or "ephemeral").replace("/", "_").replace("..", "_")
+    safe_id = _scoped_id(project_id, chat_id).replace("/", "_").replace("..", "_").replace(":", "-")
     base = os.environ.get("RESTAI_AGENT_WORKSPACE_ROOT") or "/var/tmp"
     return os.path.join(base, f"restai-chat-{safe_id}")
 
 
-def _ensure_chat_workspace(chat_id: str) -> str:
+def _ensure_chat_workspace(project_id, chat_id: str) -> str:
     import os
-    path = chat_workspace_dir(chat_id)
+    path = chat_workspace_dir(project_id, chat_id)
     os.makedirs(path, mode=0o755, exist_ok=True)
     return path
 
 
-def _create_container(chat_id: str):
+def _create_container(scoped_id: str):
     c = _get_client()
     if c is None:
         raise RuntimeError("Docker is not configured")
@@ -130,7 +151,7 @@ def _create_container(chat_id: str):
         detach=True,
         labels={
             "restai.managed": "true",
-            "restai.chat_id": chat_id,
+            "restai.chat_id": scoped_id,
             "restai.created_at": str(int(time.time())),
             "restai.observability.instance_id": get_instance_id(),
         },
@@ -147,21 +168,21 @@ def _create_container(chat_id: str):
         read_only=read_only,
         remove=True,
     )
-    logger.info("Created container %s for chat_id=%s", container.short_id, chat_id)
+    logger.info("Created container %s for chat_id=%s", container.short_id, scoped_id)
     return container
 
 
-def _get_or_create(chat_id: str):
-    container = _resolve_container(chat_id)
+def _get_or_create(scoped_id: str):
+    container = _resolve_container(scoped_id)
     if container is not None:
         return container
-    return _create_container(chat_id)
+    return _create_container(scoped_id)
 
 
-def _rm_chat_workspace(chat_id: str) -> None:
+def _rm_chat_workspace(project_id, chat_id: str) -> None:
     import shutil
     import os
-    path = chat_workspace_dir(chat_id)
+    path = chat_workspace_dir(project_id, chat_id)
     if not os.path.isdir(path):
         return
     try:
@@ -170,19 +191,20 @@ def _rm_chat_workspace(chat_id: str) -> None:
         logger.debug("Failed to rm chat workspace %s: %s", path, e)
 
 
-def remove_container(chat_id: str) -> None:
-    container = _resolve_container(chat_id)
+def remove_container(chat_id: str, project_id=None) -> None:
+    scoped_id = _scoped_id(project_id, chat_id)
+    container = _resolve_container(scoped_id)
     if container is None:
-        _drop_db_activity(chat_id)
-        _rm_chat_workspace(chat_id)
+        _drop_db_activity(scoped_id)
+        _rm_chat_workspace(project_id, chat_id)
         return
     try:
         container.stop(timeout=5)
-        logger.info("Removed container %s for chat_id=%s", container.short_id, chat_id)
+        logger.info("Removed container %s for chat_id=%s", container.short_id, scoped_id)
     except Exception as e:
-        logger.warning("Failed to stop container for chat_id=%s: %s", chat_id, e)
-    _drop_db_activity(chat_id)
-    _rm_chat_workspace(chat_id)
+        logger.warning("Failed to stop container for chat_id=%s: %s", scoped_id, e)
+    _drop_db_activity(scoped_id)
+    _rm_chat_workspace(project_id, chat_id)
 
 
 def _touch_db_activity(chat_id: str, container_id: Optional[str]) -> None:
@@ -242,14 +264,13 @@ def _exec_with_retry(chat_id: str, container, command_argv, **exec_kwargs):
     raise last_err
 
 
-def exec_command(chat_id: str, command: str, env: Optional[dict] = None) -> str:
+def exec_command(chat_id: str, command: str, env: Optional[dict] = None, project_id=None) -> str:
     """Run a shell command in the per-chat sandbox container.
 
     `env` is a per-exec environment overlay — used by the terminal tool
     to inject project secrets so the LLM never sees the plaintext.
     """
-    if not chat_id:
-        chat_id = "ephemeral"
+    chat_id = _scoped_id(project_id, chat_id)
     container = _get_or_create(chat_id)
     _touch_db_activity(chat_id, container.id)
 
@@ -282,11 +303,10 @@ def exec_command(chat_id: str, command: str, env: Optional[dict] = None) -> str:
         return f"ERROR: Command execution failed: {e}"
 
 
-def run_script(chat_id: str, script: str, stdin_data: str = "") -> str:
+def run_script(chat_id: str, script: str, stdin_data: str = "", project_id=None) -> str:
     """Pipe a Python script into the container via `python3 -c`.
     No file writes — works under read-only rootfs."""
-    if not chat_id:
-        chat_id = "ephemeral"
+    chat_id = _scoped_id(project_id, chat_id)
     container = _get_or_create(chat_id)
     _touch_db_activity(chat_id, container.id)
 
@@ -315,14 +335,14 @@ def run_script(chat_id: str, script: str, stdin_data: str = "") -> str:
 
 
 def put_files(chat_id: str, files: list[tuple[str, bytes]],
-              extract_to: str = "/home/user", subdir: str = "uploads") -> list[dict]:
+              extract_to: str = "/home/user", subdir: str = "uploads",
+              project_id=None) -> list[dict]:
     """Stage a list of `(name, bytes)` tuples into `extract_to/subdir/`
     via base64-piped tar. Returns a manifest of what landed."""
     import io
     import tarfile
 
-    if not chat_id:
-        chat_id = "ephemeral"
+    chat_id = _scoped_id(project_id, chat_id)
     if not files:
         return []
 
@@ -382,13 +402,12 @@ def put_files(chat_id: str, files: list[tuple[str, bytes]],
     return manifest
 
 
-def collect_new_artifacts(chat_id: str) -> list[dict]:
+def collect_new_artifacts(chat_id: str, project_id=None) -> list[dict]:
     """List + read everything new in /artifacts/ since the last call.
     Identity is `(path, mtime, size)`. Dedup state is a marker file
     inside the container (`/artifacts/.seen`) — multi-worker safe and
     naturally dies with the container."""
-    if not chat_id:
-        chat_id = "ephemeral"
+    chat_id = _scoped_id(project_id, chat_id)
     container = _resolve_container(chat_id)
     if container is None:
         return []

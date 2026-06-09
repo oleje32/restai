@@ -16,7 +16,7 @@ def browser_eval(js: str, **kwargs) -> str:
     ctx, err = _browser_ctx(kwargs)
     if ctx is None:
         return err
-    brain, chat_id, _, project, db = ctx
+    brain, chat_id, project_id, project, db = ctx
     try:
         if not js or not js.strip():
             return "ERROR: js is required."
@@ -27,7 +27,7 @@ def browser_eval(js: str, **kwargs) -> str:
                 "to enable it (dangerous — read the docstring)."
             )
         try:
-            result = brain.browser_manager.call(chat_id, "/eval", {"js": js})
+            result = brain.browser_manager.call(chat_id, "/eval", {"js": js}, project_id=project_id)
         except Exception as e:
             return f"ERROR: eval failed: {e}"
         import json as _json

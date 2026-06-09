@@ -15,13 +15,13 @@ def browser_screenshot(selector: str = None, **kwargs) -> str:
     ctx, err = _browser_ctx(kwargs)
     if ctx is None:
         return err
-    brain, chat_id, _, _, db = ctx
+    brain, chat_id, project_id, _, db = ctx
     try:
         payload = {}
         if selector:
             payload["selector"] = selector
         try:
-            result = brain.browser_manager.call(chat_id, "/screenshot", payload)
+            result = brain.browser_manager.call(chat_id, "/screenshot", payload, project_id=project_id)
         except Exception as e:
             return f"ERROR: screenshot failed: {e}"
         png_b64 = result.get("png_b64") or ""

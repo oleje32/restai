@@ -159,7 +159,7 @@ def _wrap_function_tool(ft, *, brain, chat_id, project_id) -> FunctionTool:
     )
 
 
-def _wrap_project_tool(row, *, brain, chat_id) -> FunctionTool:
+def _wrap_project_tool(row, *, brain, chat_id, project_id) -> FunctionTool:
     try:
         schema = (
             _json.loads(row.parameters)
@@ -188,7 +188,7 @@ def _wrap_project_tool(row, *, brain, chat_id) -> FunctionTool:
             f"{tool_code}"
         )
         try:
-            return brain.docker_manager.run_script(chat_id or "ephemeral", script, stdin_data=args_json)
+            return brain.docker_manager.run_script(chat_id or "ephemeral", script, stdin_data=args_json, project_id=project_id)
         except Exception as e:
             logger.exception("Project tool %s raised", name)
             return f"ERROR: {e}"
@@ -222,7 +222,7 @@ def _gather_tools(project: Project, agent_self, db: DBWrapper, chat_id: str) -> 
             if not getattr(row, "enabled", True):
                 continue
             try:
-                out.append(_wrap_project_tool(row, brain=agent_self.brain, chat_id=chat_id))
+                out.append(_wrap_project_tool(row, brain=agent_self.brain, chat_id=chat_id, project_id=project.props.id))
             except Exception as e:
                 logger.warning("Failed to wrap project tool %s: %s", row.name, e)
     except Exception:

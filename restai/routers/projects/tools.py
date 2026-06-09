@@ -164,7 +164,7 @@ async def update_project_custom_tool(
     warning = None
     if getattr(brain, "docker_manager", None):
         script = f"import json, sys\nargs = json.loads(sys.stdin.readline() or '{{}}')\n{final_code}"
-        test_result = brain.docker_manager.run_script("ephemeral", script, stdin_data="{}")
+        test_result = brain.docker_manager.run_script("ephemeral", script, stdin_data="{}", project_id=projectID)
         if test_result.startswith("ERROR:"):
             raise HTTPException(status_code=400, detail=f"Code validation failed — {test_result}")
     else:

@@ -399,7 +399,7 @@ def augment_system_prompt_with_memory_search_hint(
     return hint
 
 
-def upload_files_and_augment_prompt(files, chat_id, prompt, brain):
+def upload_files_and_augment_prompt(files, chat_id, prompt, brain, project_id=None):
     """Push attached files into sandbox, augment prompt with manifest; returns (prompt, warning_or_none)."""
     if not files:
         return prompt, None
@@ -422,7 +422,7 @@ def upload_files_and_augment_prompt(files, chat_id, prompt, brain):
         return prompt, None
 
     try:
-        manifest = docker.put_files(chat_id or "ephemeral", decoded)
+        manifest = docker.put_files(chat_id or "ephemeral", decoded, project_id=project_id)
     except Exception as e:
         return prompt + f"\n\n[File upload to sandbox failed: {e}]", "upload_failed"
 
@@ -450,7 +450,10 @@ def route_attachments(files, chat_id, prompt, brain, existing_image=None, projec
         image_url = f"data:{mime};base64,{primary.content}"
 
     if docs and project is not None and project_has_terminal(project):
-        prompt, _ = upload_files_and_augment_prompt(docs, chat_id, prompt, brain)
+        prompt, _ = upload_files_and_augment_prompt(
+            docs, chat_id, prompt, brain,
+            project_id=getattr(getattr(project, "props", None), "id", None),
+        )
     elif docs:
         names = ", ".join(f.name for f in docs[:5])
         if len(docs) > 5:

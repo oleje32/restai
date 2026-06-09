@@ -45,6 +45,21 @@ _storage_redis_url: Optional[str] = None
 # don't race-create two containers.
 _chat_locks: dict[str, asyncio.Lock] = {}
 
+# Sentinel project id for callers with no real project. Two DIFFERENT real
+# projects never collide because their ids differ; only genuinely
+# project-less callers share this bucket.
+EPHEMERAL_PROJECT_ID = 0
+
+
+def _scoped_id(project_id, chat_id: str) -> str:
+    """Container identity key: namespaces the client-supplied chat_id by
+    project so a chat_id from project A can never resolve to project B's
+    browser container. Used verbatim as the `restai.browser_chat_id` label
+    value AND the `browser_chat_activity` key, so create/resolve/cleanup all
+    agree."""
+    pid = EPHEMERAL_PROJECT_ID if project_id is None else int(project_id)
+    return f"{pid}:{chat_id or 'ephemeral'}"
+
 
 def is_enabled() -> bool:
     if not bool(getattr(_cfg, "BROWSER_ENABLED", False)):
@@ -121,17 +136,17 @@ def save_storage_state(project_id: int, domain: str, state: dict) -> None:
     _storage_local[key] = state
 
 
-def _resolve_container(chat_id: str):
+def _resolve_container(scoped_id: str):
     c = _get_client()
-    if c is None or not chat_id:
+    if c is None or not scoped_id:
         return None
     try:
         matches = c.containers.list(
-            filters={"label": [f"restai.browser_chat_id={chat_id}", "restai.browser_managed=true"]},
+            filters={"label": [f"restai.browser_chat_id={scoped_id}", "restai.browser_managed=true"]},
             limit=1,
         )
     except Exception as e:
-        logger.warning("Browser container list failed for chat_id=%s: %s", chat_id, e)
+        logger.warning("Browser container list failed for chat_id=%s: %s", scoped_id, e)
         return None
     if matches and matches[0].status == "running":
         return matches[0]
@@ -221,13 +236,13 @@ def _wait_healthy(host_port: int) -> None:
     raise RuntimeError(f"Browser: micro-server health check timed out ({last_err})")
 
 
-def _create_container(chat_id: str):
+def _create_container(scoped_id: str):
     c = _get_client()
     if c is None:
         raise RuntimeError("Browser runtime is not configured")
     image = (getattr(_cfg, "BROWSER_IMAGE", _DEFAULT_IMAGE) or _DEFAULT_IMAGE)
     network = (getattr(_cfg, "BROWSER_NETWORK", "bridge") or "bridge")
-    logger.info("Browser: creating container for chat_id=%s", chat_id)
+    logger.info("Browser: creating container for chat_id=%s", scoped_id)
     from restai.observability.instance import get_instance_id
     container = c.containers.run(
         image,
@@ -235,7 +250,7 @@ def _create_container(chat_id: str):
         detach=True,
         labels={
             "restai.browser_managed": "true",
-            "restai.browser_chat_id": chat_id,
+            "restai.browser_chat_id": scoped_id,
             "restai.created_at": str(int(time.time())),
             "restai.observability.instance_id": get_instance_id(),
         },
@@ -263,34 +278,39 @@ def _create_container(chat_id: str):
     return container, port
 
 
-def _get_or_create(chat_id: str):
-    container = _resolve_container(chat_id)
+def _get_or_create(scoped_id: str):
+    container = _resolve_container(scoped_id)
     if container is not None:
         port = _discover_port(container)
         if port is not None:
             return container, port
-    return _create_container(chat_id)
+    return _create_container(scoped_id)
 
 
-def _chat_lock(chat_id: str) -> asyncio.Lock:
-    lock = _chat_locks.get(chat_id)
+def _chat_lock(scoped_id: str) -> asyncio.Lock:
+    lock = _chat_locks.get(scoped_id)
     if lock is None:
         lock = asyncio.Lock()
-        _chat_locks[chat_id] = lock
+        _chat_locks[scoped_id] = lock
     return lock
 
 
-def remove_container(chat_id: str) -> None:
-    """Stop the per-chat container if it exists. Idempotent."""
-    container = _resolve_container(chat_id)
-    _drop_db_activity(chat_id)
+def _remove_by_scoped_id(scoped_id: str) -> None:
+    """Stop the container identified by an already-scoped id. Idempotent."""
+    container = _resolve_container(scoped_id)
+    _drop_db_activity(scoped_id)
     if container is None:
         return
     try:
         container.stop(timeout=3)
-        logger.info("Browser: removed container for chat_id=%s", chat_id)
+        logger.info("Browser: removed container for chat_id=%s", scoped_id)
     except Exception as e:
-        logger.warning("Browser: failed to stop container for chat_id=%s: %s", chat_id, e)
+        logger.warning("Browser: failed to stop container for chat_id=%s: %s", scoped_id, e)
+
+
+def remove_container(chat_id: str, project_id=None) -> None:
+    """Stop the per-chat container if it exists. Idempotent."""
+    _remove_by_scoped_id(_scoped_id(project_id, chat_id))
 
 
 def _touch_db_activity(chat_id: str, container_id: Optional[str]) -> None:
@@ -321,10 +341,9 @@ def _drop_db_activity(chat_id: str) -> None:
         logger.debug("browser_chat_activity delete failed for %s: %s", chat_id, e)
 
 
-def call(chat_id: str, path: str, payload: Optional[dict] = None) -> dict:
+def call(chat_id: str, path: str, payload: Optional[dict] = None, project_id=None) -> dict:
     """Post JSON to the in-container micro-server and return parsed response."""
-    if not chat_id:
-        chat_id = "ephemeral"
+    chat_id = _scoped_id(project_id, chat_id)
     container, port = _get_or_create(chat_id)
     _touch_db_activity(chat_id, container.id)
 
@@ -332,8 +351,10 @@ def call(chat_id: str, path: str, payload: Optional[dict] = None) -> dict:
     try:
         resp = requests.post(url, json=payload or {}, timeout=90)
     except requests.exceptions.RequestException:
-        # Container might have died; drop + retry once.
-        remove_container(chat_id)
+        # Container might have died; drop + retry once. `chat_id` is already
+        # the scoped id here, so use the scoped-id remover directly to keep
+        # the label/lookup consistent (re-scoping would double-prefix).
+        _remove_by_scoped_id(chat_id)
         container, port = _get_or_create(chat_id)
         _touch_db_activity(chat_id, container.id)
         url = f"http://127.0.0.1:{port}{path}"

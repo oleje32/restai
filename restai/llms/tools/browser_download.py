@@ -13,7 +13,7 @@ def browser_download(selector: str, timeout: int = 30, **kwargs) -> str:
     ctx, err = _browser_ctx(kwargs)
     if ctx is None:
         return err
-    brain, chat_id, _, _, db = ctx
+    brain, chat_id, project_id, _, db = ctx
     try:
         if not selector:
             return "ERROR: selector is required."
@@ -23,7 +23,7 @@ def browser_download(selector: str, timeout: int = 30, **kwargs) -> str:
             t = 30
         try:
             result = brain.browser_manager.call(
-                chat_id, "/download", {"selector": selector, "timeout": t}
+                chat_id, "/download", {"selector": selector, "timeout": t}, project_id=project_id
             )
         except Exception as e:
             return f"ERROR: download failed: {e}"

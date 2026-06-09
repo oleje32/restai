@@ -12,13 +12,13 @@ def browser_content(selector: str = None, format: str = "markdown", **kwargs) ->
     ctx, err = _browser_ctx(kwargs)
     if ctx is None:
         return err
-    brain, chat_id, _, _, db = ctx
+    brain, chat_id, project_id, _, db = ctx
     try:
         payload = {"format": format}
         if selector:
             payload["selector"] = selector
         try:
-            result = brain.browser_manager.call(chat_id, "/content", payload)
+            result = brain.browser_manager.call(chat_id, "/content", payload, project_id=project_id)
         except Exception as e:
             return f"ERROR: content read failed: {e}"
         content = result.get("content") or ""

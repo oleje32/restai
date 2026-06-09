@@ -40,7 +40,7 @@ def browser_fill(selector: str, value: str = None, secret_ref: str = None, **kwa
             typed = value
 
         try:
-            brain.browser_manager.call(chat_id, "/fill", {"selector": selector, "value": typed})
+            brain.browser_manager.call(chat_id, "/fill", {"selector": selector, "value": typed}, project_id=project_id)
         except Exception as e:
             return f"ERROR: fill failed: {e}"
         if has_ref:

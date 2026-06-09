@@ -144,7 +144,7 @@ def _wrap_function_tool(ft, *, brain, chat_id, project_id) -> Tool:
     return cls()
 
 
-def _wrap_project_tool(row, *, brain, chat_id) -> Tool:
+def _wrap_project_tool(row, *, brain, chat_id, project_id) -> Tool:
     """ProjectToolDatabase row → smolagents Tool that runs user code in per-chat Docker sandbox."""
     try:
         schema = (
@@ -170,7 +170,7 @@ def _wrap_project_tool(row, *, brain, chat_id) -> Tool:
             f"{tool_code}"
         )
         try:
-            return brain.docker_manager.run_script(chat_id or "ephemeral", script, stdin_data=args_json)
+            return brain.docker_manager.run_script(chat_id or "ephemeral", script, stdin_data=args_json, project_id=project_id)
         except Exception as e:
             logger.exception("Project tool %s raised", tool_name)
             return f"ERROR: {e}"
@@ -210,7 +210,7 @@ def _gather_tools(project: Project, agent_self, db: DBWrapper, chat_id: str) -> 
             if not getattr(row, "enabled", True):
                 continue
             try:
-                tools.append(_wrap_project_tool(row, brain=agent_self.brain, chat_id=chat_id))
+                tools.append(_wrap_project_tool(row, brain=agent_self.brain, chat_id=chat_id, project_id=project.props.id))
             except Exception as e:
                 logger.warning("Failed to wrap project tool %s: %s", row.name, e)
     except Exception:

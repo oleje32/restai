@@ -58,7 +58,7 @@ def _wrap_project_tool_as_function_tool(tool_row, brain) -> FunctionTool:
     def _run(**kwargs):
         _brain = kwargs.pop("_brain", brain)
         chat_id = kwargs.pop("_chat_id", None)
-        kwargs.pop("_project_id", None)
+        _project_id = kwargs.pop("_project_id", None)
         if not _brain or not getattr(_brain, "docker_manager", None):
             return "ERROR: Docker is not configured."
         args_json = _json.dumps(kwargs)
@@ -67,7 +67,7 @@ def _wrap_project_tool_as_function_tool(tool_row, brain) -> FunctionTool:
             "args = json.loads(sys.stdin.readline() or '{}')\n"
             f"{tool_code}"
         )
-        return _brain.docker_manager.run_script(chat_id or "ephemeral", script, stdin_data=args_json)
+        return _brain.docker_manager.run_script(chat_id or "ephemeral", script, stdin_data=args_json, project_id=_project_id)
 
     return FunctionTool.from_defaults(
         fn=_run,

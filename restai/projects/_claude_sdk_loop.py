@@ -111,7 +111,7 @@ def _build_options(project, db, brain, *, system_prompt: str, chat_id: str,
     # dir that is NOT mounted into the container — no agent data reaches the
     # host. (Kept off the RESTai source dir so a hypothetical leaked host tool
     # still couldn't touch our code.)
-    cwd = _docker._ensure_chat_workspace(chat_id) if hasattr(_docker, "_ensure_chat_workspace") else None
+    cwd = _docker._ensure_chat_workspace(project.props.id, chat_id) if hasattr(_docker, "_ensure_chat_workspace") else None
 
     builtins_server, builtin_allowed = build_builtins_mcp(project, db, brain, chat_id)
     mcp_servers: dict = {}

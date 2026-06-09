@@ -11,7 +11,7 @@ def browser_wait(selector: str, timeout: int = 10, **kwargs) -> str:
     ctx, err = _browser_ctx(kwargs)
     if ctx is None:
         return err
-    brain, chat_id, _, _, db = ctx
+    brain, chat_id, project_id, _, db = ctx
     try:
         if not selector:
             return "ERROR: selector is required."
@@ -20,7 +20,7 @@ def browser_wait(selector: str, timeout: int = 10, **kwargs) -> str:
         except (TypeError, ValueError):
             t = 10
         try:
-            result = brain.browser_manager.call(chat_id, "/wait", {"selector": selector, "timeout": t})
+            result = brain.browser_manager.call(chat_id, "/wait", {"selector": selector, "timeout": t}, project_id=project_id)
         except Exception as e:
             return f"ERROR: wait failed: {e}"
         if result.get("found"):

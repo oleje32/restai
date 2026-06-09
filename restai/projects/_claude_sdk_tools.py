@@ -102,7 +102,7 @@ def _wrap_function_tool(ft, *, brain, chat_id, project_id):
     return _sdk_handler
 
 
-def _wrap_project_tool(tool_row, *, brain, chat_id):
+def _wrap_project_tool(tool_row, *, brain, chat_id, project_id):
     """ProjectToolDatabase row → SDK tool (mirrors agent._make_project_tool_adapted)."""
     name = tool_row.name
     description = tool_row.description or name
@@ -129,7 +129,7 @@ def _wrap_project_tool(tool_row, *, brain, chat_id):
         )
         try:
             result = brain.docker_manager.run_script(
-                chat_id or "ephemeral", script, stdin_data=args_json
+                chat_id or "ephemeral", script, stdin_data=args_json, project_id=project_id
             )
         except Exception as e:
             logger.exception("Project tool %s raised", name)
@@ -170,7 +170,7 @@ def build_builtins_mcp(project, db, brain, chat_id: str):
         if not getattr(row, "enabled", True):
             continue
         try:
-            sdk_tools.append(_wrap_project_tool(row, brain=brain, chat_id=chat_id))
+            sdk_tools.append(_wrap_project_tool(row, brain=brain, chat_id=chat_id, project_id=project_id))
             allowed.append(f"mcp__restai_builtins__{row.name}")
         except Exception as e:
             logger.warning("Failed to wrap project tool %s: %s", row.name, e)

@@ -49,6 +49,7 @@ def create_tool(name: str, description: str, parameters: str, code: str, **kwarg
         chat_id or "ephemeral",
         script,
         stdin_data="{}",
+        project_id=project_id,
     )
     if test_result.startswith("ERROR:"):
         return f"ERROR: Code validation failed — {test_result}"

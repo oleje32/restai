@@ -13,13 +13,13 @@ def browser_goto(url: str, **kwargs) -> str:
     ctx, err = _browser_ctx(kwargs)
     if ctx is None:
         return err
-    brain, chat_id, _, project, db = ctx
+    brain, chat_id, project_id, project, db = ctx
     try:
         err = _check_allowed_domain(project, url or "")
         if err:
             return err
         try:
-            result = brain.browser_manager.call(chat_id, "/goto", {"url": url})
+            result = brain.browser_manager.call(chat_id, "/goto", {"url": url}, project_id=project_id)
         except Exception as e:
             return f"ERROR: navigation failed: {e}"
         return (

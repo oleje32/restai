@@ -10,12 +10,12 @@ def browser_click(selector: str, **kwargs) -> str:
     ctx, err = _browser_ctx(kwargs)
     if ctx is None:
         return err
-    brain, chat_id, _, _, db = ctx
+    brain, chat_id, project_id, _, db = ctx
     try:
         if not selector or not selector.strip():
             return "ERROR: selector is required."
         try:
-            result = brain.browser_manager.call(chat_id, "/click", {"selector": selector})
+            result = brain.browser_manager.call(chat_id, "/click", {"selector": selector}, project_id=project_id)
         except Exception as e:
             return f"ERROR: click failed: {e}"
         url = result.get("url_after")

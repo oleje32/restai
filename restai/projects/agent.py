@@ -76,12 +76,12 @@ def _make_project_tool_adapted(tool_row, brain) -> AdaptedTool:
     async def _run_project_tool(**kwargs):
         _brain = kwargs.pop("_brain", brain)
         _chat_id = kwargs.pop("_chat_id", None)
-        kwargs.pop("_project_id", None)
+        _project_id = kwargs.pop("_project_id", None)
         if not _brain or not getattr(_brain, "docker_manager", None):
             return "ERROR: Docker is not configured."
         args_json = _json.dumps(kwargs)
         script = f"import json, sys\nargs = json.loads(sys.stdin.readline() or '{{}}')\n{tool_code}"
-        return _brain.docker_manager.run_script(_chat_id or "ephemeral", script, stdin_data=args_json)
+        return _brain.docker_manager.run_script(_chat_id or "ephemeral", script, stdin_data=args_json, project_id=_project_id)
 
     return AdaptedTool(
         name=tool_name,
