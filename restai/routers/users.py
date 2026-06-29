@@ -461,7 +461,7 @@ async def route_update_user(
             raise HTTPException(status_code=404, detail="User not found")
 
         if not user.is_admin and user_update.is_admin is True:
-            raise HTTPException(status_code=403, detail="Insuficient permissions")
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
 
         # is_private gates public LLM/image access; team admins MUST NOT flip
         # their own is_private (would self-bypass the privacy boundary).
